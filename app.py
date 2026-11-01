@@ -1,9 +1,11 @@
 """Account health handoff.
 
 The app opens on a home page. Pick a viewer — strategic, operational, or
-process executor — and the same scores are cut for that job. On a machine
-that has the practicum extracts, those files are read first. Otherwise the
-bundled health extract in data/health is used so the pages are reviewable.
+process executor — and the same scores are cut for that job. Python modules
+and data files are loaded from
+https://github.com/pomosola/AccountHealthDashboard. Files that repository
+does not contain are taken from the local practicum folder when they exist.
+Otherwise the bundled health extract in data/health is used.
 
     streamlit run app.py
 """
@@ -11,6 +13,9 @@ bundled health extract in data/health is used so the pages are reviewable.
 from __future__ import annotations
 
 import html
+import os
+import sys
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -19,9 +24,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import dashboard_lib as lib
+import github_source
 import health_model as hm
 import practicum_pack
 import practicum_view
+
+_GITHUB_MODULES = ("dashboard_lib", "health_model", "practicum_pack", "practicum_view")
 
 CHART = {"displaylogo": False, "displayModeBar": False, "responsive": True}
 VIEWERS = ["Strategic", "Operational", "Process executor"]
@@ -141,12 +149,56 @@ def load_portfolio() -> hm.Portfolio:
     return portfolio
 
 
+def _github_enabled() -> bool:
+    if os.environ.get("DASHBOARD_GITHUB") == "0":
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    return "streamlit.testing" not in sys.modules
+
+
+def _activate_github(root: Path) -> None:
+    root_text = str(root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
+    for name in list(sys.modules):
+        if name in _GITHUB_MODULES or any(name.startswith(f"{module}.") for module in _GITHUB_MODULES):
+            del sys.modules[name]
+    dashboard_mod = __import__("dashboard_lib")
+    health_mod = __import__("health_model")
+    pack_mod = __import__("practicum_pack")
+    view_mod = __import__("practicum_view")
+    dashboard_mod.default_folder = lambda path=root: path
+    dashboard_mod.practicum_folder = lambda path=root: path
+    globals()["lib"] = dashboard_mod
+    globals()["hm"] = health_mod
+    globals()["practicum_pack"] = pack_mod
+    globals()["practicum_view"] = view_mod
+
+
 def main() -> None:
     st.set_page_config(page_title="Account health handoff", page_icon="◆", layout="wide")
+    filled: list[str] = []
+    if _github_enabled():
+        try:
+            with st.spinner("Loading Python and data from GitHub…"):
+                root, filled = github_source.sync()
+            _activate_github(root)
+        except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+            st.warning(f"GitHub could not be loaded ({exc}). The local dashboard files are in use.")
     apply_requests()
     inject_css()
     folder = Path(str(st.session_state["data_folder"])).expanduser()
     if practicum_pack.is_practicum_pack(folder):
+        if filled:
+            st.sidebar.caption(
+                "Python and data load from github.com/pomosola/AccountHealthDashboard. "
+                "These files are not in that repository, so the local practicum folder supplied them: "
+                + ", ".join(filled)
+                + "."
+            )
+        else:
+            st.sidebar.caption("Python and data load from github.com/pomosola/AccountHealthDashboard.")
         practicum_view.render(folder)
         return
     if st.session_state.get("page") not in PAGES:
