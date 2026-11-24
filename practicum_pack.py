@@ -46,13 +46,51 @@ def reconstruct_probability(intercept: float, contributions: pd.Series) -> float
     return sigmoid(float(intercept) + float(pd.to_numeric(contributions, errors="coerce").fillna(0).sum()))
 
 
+PERFORMANCE_SPECS = [
+    ("outcome", "Outcome", ["outcome"]),
+    ("selected_model", "Model", ["selected_model", "model", "model_name", "model_family", "estimator"]),
+    ("roc_auc", "ROC AUC", ["roc_auc", "auc"]),
+    ("average_precision", "Average precision", ["average_precision", "pr_auc"]),
+    ("precision_at_50", "Precision at 50", ["precision_at_50", "precision_at_k"]),
+    ("recall_at_50", "Recall at 50", ["recall_at_50", "recall_at_k"]),
+    ("observed_outcome_rate", "Observed rate", ["observed_outcome_rate", "observed_rate", "base_rate", "outcome_rate", "positive_rate"]),
+    ("mean_predicted_probability", "Mean predicted", ["mean_predicted_probability", "mean_predicted", "mean_prediction", "mean_probability", "avg_predicted_probability"]),
+]
+
+
+def present_columns(frame: pd.DataFrame, specs: list[tuple[str, str, list[str]]]) -> pd.DataFrame:
+    """Pick known columns by alias. Missing names are skipped instead of raising."""
+    lookup: dict[str, object] = {}
+    for column in frame.columns:
+        key = str(column).replace("\ufeff", "").strip().lower()
+        lookup.setdefault(key, column)
+    chosen = []
+    labels = []
+    for _name, label, aliases in specs:
+        actual = next((lookup[alias.strip().lower()] for alias in aliases if alias.strip().lower() in lookup), None)
+        if actual is None or actual in chosen:
+            continue
+        chosen.append(actual)
+        labels.append(label)
+    if not chosen:
+        return frame.copy()
+    out = frame.loc[:, chosen].copy()
+    out.columns = labels
+    return out
+
+
 def _read(folder: Path, name: str, usecols: list[str] | None = None) -> pd.DataFrame:
     path = folder / name
-    header = pd.read_csv(path, nrows=0).columns.tolist()
-    if usecols is not None:
-        usecols = [column for column in usecols if column in header] or None
-    dtype = {column: str for column in header if column in ID_COLUMNS or column.endswith("_id") or column.endswith("_number")}
-    frame = pd.read_csv(path, dtype=dtype, usecols=usecols, low_memory=False)
+    header = pd.read_csv(path, nrows=0, encoding="utf-8-sig").columns.tolist()
+    dtype = {
+        column: str
+        for column in header
+        if str(column).replace("\ufeff", "").strip() in ID_COLUMNS
+        or str(column).replace("\ufeff", "").strip().endswith("_id")
+        or str(column).replace("\ufeff", "").strip().endswith("_number")
+    }
+    frame = pd.read_csv(path, dtype=dtype, usecols=usecols, low_memory=False, encoding="utf-8-sig")
+    frame.columns = [str(column).replace("\ufeff", "").strip() for column in frame.columns]
     for column in frame.columns:
         if column in dtype:
             frame[column] = frame[column].fillna("").map(lambda value: "" if value in {"nan", "None"} else str(value).strip())
@@ -79,51 +117,8 @@ class Pack:
     handoff: dict
 
 
-def _copy_alias(frame: pd.DataFrame, source: str, target: str) -> None:
-    if target not in frame.columns and source in frame.columns:
-        frame[target] = frame[source]
-
-
-def _score_definitions(context: pd.DataFrame) -> pd.DataFrame:
-    """One row per score. Newer extracts renamed several context columns."""
-    _copy_alias(context, "service_history_start_inclusive", "history_start_inclusive")
-    _copy_alias(context, "contact_role_caveat", "role_sample_caveat")
-    _copy_alias(context, "evaluation_accounts", "test_accounts")
-    _copy_alias(context, "evaluation_positive_accounts", "test_positive_accounts")
-    _copy_alias(context, "availability_caveat", "source_comparability_caveat")
-    if "caveats" not in context.columns:
-        parts = [column for column in ("score_caveat", "validation_caveat") if column in context.columns]
-        if parts:
-            context["caveats"] = context[parts].fillna("").agg(
-                lambda row: " ".join(str(part).strip() for part in row if str(part).strip()),
-                axis=1,
-            )
-    definitions = context.drop_duplicates("score_name").reset_index(drop=True)
-    names = set(definitions["score_name"])
-    if "experimental_health_score" in names and "product_health_score" not in names:
-        alias = definitions[definitions["score_name"].eq("experimental_health_score")].copy()
-        alias["score_name"] = "product_health_score"
-        definitions = pd.concat([definitions, alias], ignore_index=True)
-    return definitions
-
-
-def _align_drivers(drivers: pd.DataFrame) -> pd.DataFrame:
-    """The updated driver extract uses shorter column names."""
-    _copy_alias(drivers, "feature", "feature_label")
-    _copy_alias(drivers, "is_top_three", "is_top_three_driver")
-    _copy_alias(drivers, "display_direction", "direction")
-    _copy_alias(drivers, "interpretation", "explanation")
-    if "direction" in drivers.columns:
-        drivers["direction"] = drivers["direction"].map(
-            lambda value: "" if pd.isna(value) else str(value).replace("_", " ")
-        )
-    return drivers
-
-
 def load_pack(folder: Path) -> Pack:
     health = _read(folder, "product_health_score.csv")
-    if "product_health_score" not in health.columns and "experimental_health_score" in health.columns:
-        health["product_health_score"] = health["experimental_health_score"]
     adoption = _read(
         folder,
         "product_adoption_score.csv",
@@ -166,13 +161,6 @@ def load_pack(folder: Path) -> Pack:
             "state_interpretation",
             "withheld_active_opportunities",
             "administrative_end_date_records",
-            "score_status",
-            "reason_codes",
-            "verified_contracted_units",
-            "verified_activated_units",
-            "product_adoption_score",
-            "eligible_active_opportunities",
-            "source_extract_date",
         ],
     )
     hierarchy = _read(
@@ -192,16 +180,6 @@ def load_pack(folder: Path) -> Pack:
             "candidate_parent_account_number",
         ],
     )
-    published_adoption = [
-        "product_adoption_score",
-        "score_status",
-        "reason_codes",
-        "verified_contracted_units",
-        "verified_activated_units",
-        "eligible_active_opportunities",
-        "source_extract_date",
-    ]
-    adoption = adoption.drop(columns=[column for column in published_adoption if column in state.columns and column in adoption.columns])
     accounts = hierarchy.merge(state.drop(columns=[c for c in ("parent_link_status", "parent_validation_status", "candidate_parent_account_number") if c in state.columns]), on="account_number", how="outer")
     accounts = accounts.merge(health, on="account_number", how="left").merge(adoption, on="account_number", how="left", suffixes=("", "_adoption"))
     accounts["product_health_score"] = pd.to_numeric(accounts["product_health_score"], errors="coerce")
@@ -227,29 +205,21 @@ def load_pack(folder: Path) -> Pack:
             "freshness_status",
             "confidence_basis",
             "caveats",
-            "score_caveat",
-            "validation_caveat",
-            "availability_caveat",
             "migration_caveat",
             "role_sample_caveat",
-            "contact_role_caveat",
             "source_comparability_caveat",
             "score_status",
             "selected_model",
             "test_accounts",
             "test_positive_accounts",
-            "evaluation_accounts",
-            "evaluation_positive_accounts",
             "history_start_inclusive",
-            "service_history_start_inclusive",
             "outcome_end_exclusive",
             "target_mapping_status",
         ],
     )
-    definitions = _score_definitions(context)
+    definitions = context.drop_duplicates("score_name").reset_index(drop=True)
 
     drivers = _read(folder, "account_prediction_drivers.csv")
-    drivers = _align_drivers(drivers)
     drivers["contribution_calibrated_log_odds"] = pd.to_numeric(drivers["contribution_calibrated_log_odds"], errors="coerce")
     drivers["calibrated_intercept"] = pd.to_numeric(drivers["calibrated_intercept"], errors="coerce")
     drivers["driver_rank"] = pd.to_numeric(drivers["driver_rank"], errors="coerce")

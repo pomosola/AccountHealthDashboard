@@ -1,11 +1,8 @@
 """Account health handoff.
 
-The app opens on a home page. Pick a viewer — strategic, operational, or
-process executor — and the same scores are cut for that job. Python modules
-and data files are loaded from
-https://github.com/pomosola/AccountHealthDashboard. Files that repository
-does not contain are taken from the local practicum folder when they exist.
-Otherwise the bundled health extract in data/health is used.
+The app opens on a home page. The sidebar is the navigation. On a machine
+that has the practicum extracts, those files are read first. Otherwise the
+bundled health extract in data/health is used so the pages are reviewable.
 
     streamlit run app.py
 """
@@ -13,9 +10,6 @@ Otherwise the bundled health extract in data/health is used.
 from __future__ import annotations
 
 import html
-import os
-import sys
-import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -24,14 +18,13 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import dashboard_lib as lib
-import github_source
 import health_model as hm
 import practicum_pack
 import practicum_view
 
 CHART = {"displaylogo": False, "displayModeBar": False, "responsive": True}
 VIEWERS = ["Strategic", "Operational", "Process executor"]
-PAGES = ["Home", "Health scores", "Hierarchy and people", "Journey and migration"]
+PAGES = ["Home", "Health scores", "Hierarchy and people", "Journey and migration", "Source tables"]
 VIEWER_COPY = {
     "Strategic": "Portfolio health, where the money sits, and whether the migration is holding.",
     "Operational": "The book of accounts you own: who is critical, who can expand, and which score is stale.",
@@ -88,8 +81,6 @@ def inject_css() -> None:
           }
           .eyebrow { color: #F3E6B8; font-size: 0.76rem; letter-spacing: 0.08em; text-transform: uppercase; }
           .hero h1 { font-size: 1.7rem; font-weight: 620; line-height: 1.2; margin: 0.2rem 0 0.35rem; }
-          .hero h1.glance { margin: 0; line-height: 1; }
-          .hero p.authors { margin: -0.7rem 0 1.15rem; line-height: 1.05; }
           .hero p { color: rgba(255,255,255,0.9); margin: 0; }
           .strip {
             display: flex; flex-wrap: wrap; gap: 0.45rem 1rem;
@@ -147,66 +138,33 @@ def load_portfolio() -> hm.Portfolio:
     return portfolio
 
 
-def _github_enabled() -> bool:
-    if os.environ.get("DASHBOARD_GITHUB") == "0":
-        return False
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return False
-    return "streamlit.testing" not in sys.modules
-
-
-def _activate_github(root: Path) -> None:
-    """Point the data folder at the GitHub checkout. The reading code stays local."""
-    lib.default_folder = lambda path=root: path
-    lib.practicum_folder = lambda path=root: path
-
-
 def main() -> None:
     st.set_page_config(page_title="Account health handoff", page_icon="◆", layout="wide")
-    filled: list[str] = []
-    if _github_enabled():
-        try:
-            with st.spinner("Loading data from GitHub…"):
-                root, filled = github_source.sync()
-            _activate_github(root)
-        except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
-            st.warning(f"GitHub could not be loaded ({exc}). The local dashboard files are in use.")
     apply_requests()
     inject_css()
     folder = Path(str(st.session_state["data_folder"])).expanduser()
     if practicum_pack.is_practicum_pack(folder):
-        if filled:
-            st.sidebar.caption(
-                "Data loads from github.com/pomosola/AccountHealthDashboard. "
-                "These files are not in that repository, so the local practicum folder supplied them: "
-                + ", ".join(filled)
-                + "."
-            )
-        else:
-            st.sidebar.caption("Data loads from github.com/pomosola/AccountHealthDashboard.")
         practicum_view.render(folder)
         return
     if st.session_state.get("page") not in PAGES:
         st.session_state["page"] = "Home"
-    if st.session_state.get("viewer") not in VIEWERS:
-        st.session_state["viewer"] = "Strategic"
-    st.sidebar.radio("Who is looking", VIEWERS, key="viewer")
-    st.sidebar.caption(VIEWER_COPY[st.session_state["viewer"]])
     st.sidebar.radio("Go to", PAGES, key="page")
+    st.sidebar.caption("Home is the summary. Health scores opens one account. Journey is the migration timeline.")
     data_controls()
     portfolio = load_portfolio()
     scoped = scope_controls(portfolio)
-    viewer = st.session_state["viewer"]
     page = st.session_state["page"]
-    context_strip(portfolio, scoped, viewer)
+    context_strip(portfolio, scoped)
     if page == "Home":
-        home(portfolio, scoped, viewer)
+        home(portfolio, scoped)
     elif page == "Health scores":
-        health_page(portfolio, scoped, viewer)
+        health_page(portfolio, scoped)
     elif page == "Hierarchy and people":
-        hierarchy_page(portfolio, scoped, viewer)
+        hierarchy_page(portfolio, scoped)
     elif page == "Journey and migration":
-        journey_page(portfolio, scoped, viewer)
+        journey_page(portfolio, scoped)
+    else:
+        source_page(portfolio)
 
 
 def data_controls() -> None:
@@ -257,13 +215,12 @@ def scope_controls(portfolio: hm.Portfolio) -> pd.DataFrame:
     return scoped
 
 
-def context_strip(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> None:
+def context_strip(portfolio: hm.Portfolio, scoped: pd.DataFrame) -> None:
     as_of = hm.pretty_date(portfolio.extract_as_of)
     cutover = hm.pretty_date(portfolio.cutover)
     st.markdown(
         (
             "<div class='strip'>"
-            f"<span><b>{html.escape(viewer)} view</b></span>"
             f"<span>{len(scoped)} accounts in scope</span>"
             f"<span>Extract as of {html.escape(as_of)}</span>"
             f"<span>Cutover {html.escape(cutover)}</span>"
@@ -274,7 +231,7 @@ def context_strip(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) ->
     )
 
 
-def home(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> None:
+def home(portfolio: hm.Portfolio, scoped: pd.DataFrame) -> None:
     st.markdown(
         """
         <div class='hero'>
@@ -285,7 +242,7 @@ def home(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> None:
         """,
         unsafe_allow_html=True,
     )
-    viewer_switch(viewer)
+    _sample_audiences()
     if portfolio.using_sample:
         st.markdown(
             "<div class='note'><b>Bundled extract.</b> This machine does not have "
@@ -297,36 +254,32 @@ def home(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> None:
     elif not portfolio.ready:
         st.markdown(
             "<div class='note'>The folder did not contain a recognizable account, score, or sub-score table. "
-            "A health file needs an account id and either a churn or expansion score, or domain sub-scores.</div>",
+            "Open <b>Source tables</b> to see what was read. A health file needs an account id and either a churn or expansion score, or domain sub-scores.</div>",
             unsafe_allow_html=True,
         )
     handoff_banner(portfolio)
     if not scoped.empty:
-        kpis(portfolio, scoped, viewer)
-        if viewer == "Strategic":
-            strategic_home(portfolio, scoped)
-        elif viewer == "Operational":
-            operational_home(portfolio, scoped)
-        else:
-            executor_home(portfolio, scoped)
+        kpis(portfolio, scoped)
+        strategic_home(portfolio, scoped)
+        executor_home(portfolio, scoped)
         spotlight(portfolio, scoped)
     start_here()
     file_map(portfolio)
 
 
-def viewer_switch(active: str) -> None:
+def _sample_audiences() -> None:
+    st.markdown("### Who reads what")
+    st.caption("Use Go to in the sidebar. This sample book has no separate viewer switch.")
     columns = st.columns(3)
-    for column, name in zip(columns, VIEWERS):
+    cards = [
+        ("Leadership", "Read the summary on this page, then open Health scores for one account and its drivers."),
+        ("Process executors", "The Salesforce steps are on this page under the summary. Legacy-only rows stay listed and are not work on the new instance."),
+        ("Support and product", "Journey and migration is the timeline. Hierarchy and people is the parent, child, and contact tree."),
+    ]
+    for column, (title, body) in zip(columns, cards):
         with column:
-            css = "viewer-card active" if name == active else "viewer-card"
-            st.markdown(
-                f"<div class='{css}'><h3>{html.escape(name)}</h3><p>{html.escape(VIEWER_COPY[name])}</p></div>",
-                unsafe_allow_html=True,
-            )
-            if name == active:
-                st.caption("This is the view you are in.")
-            else:
-                st.button(f"Switch to {name}", on_click=request_viewer, args=(name,), key=f"switch-{name}", width="stretch")
+            st.markdown(f"**{title}**")
+            st.caption(body)
 
 
 def handoff_banner(portfolio: hm.Portfolio) -> None:
@@ -339,7 +292,7 @@ def handoff_banner(portfolio: hm.Portfolio) -> None:
     )
 
 
-def kpis(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> None:
+def kpis(portfolio: hm.Portfolio, scoped: pd.DataFrame) -> None:
     arr = pd.to_numeric(scoped["arr"], errors="coerce").fillna(0)
     critical = scoped["churn_band"].eq("Critical")
     ready = scoped["expansion_band"].eq("Ready") & ~critical
@@ -354,14 +307,6 @@ def kpis(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> None:
         ("Expansion-ready ARR", hm.money(arr[ready].sum()), f"{int(ready.sum())} accounts at 70 or above, and not critical"),
         ("Low confidence", str(int(low.sum())), "Gaps, tiny samples, or legacy-only points"),
     ]
-    if viewer == "Process executor":
-        mine = portfolio.actions
-        if not mine.empty:
-            mine = mine[mine["account_id"].isin(scoped["account_id"]) & mine["audience"].eq("Process executor")]
-        salesforce = 0 if mine.empty else int((~mine["legacy_only"]).sum())
-        legacy = 0 if mine.empty else int(mine["legacy_only"].sum())
-        cards[4] = ("Salesforce actions", str(salesforce), "Steps to log on the new instance")
-        cards[5] = ("Legacy residue", str(legacy), "Do not carry these forward")
     html_cards = "".join(
         f"<div class='kpi'><div class='k'>{html.escape(label)}</div><div class='v'>{html.escape(value)}</div><div class='n'>{html.escape(note)}</div></div>"
         for label, value, note in cards
@@ -411,7 +356,7 @@ def strategic_home(portfolio: hm.Portfolio, scoped: pd.DataFrame) -> None:
         st.caption(
             f"The operating team has {int((actions.audience == 'Operational').sum())} account-manager items and "
             f"{int((actions.audience == 'Process executor').sum())} execution steps in this scope, "
-            f"including {int(actions.legacy_only.sum())} legacy-only items. Switch to those viewers to work the list."
+            f"including {int(actions.legacy_only.sum())} legacy-only items. The Salesforce steps are listed under this summary."
         )
 
 
@@ -465,23 +410,12 @@ def spotlight(portfolio: hm.Portfolio, scoped: pd.DataFrame) -> None:
 
 
 def start_here() -> None:
-    st.markdown("### Start here")
-    st.caption("You do not need a walkthrough. Four stops cover the review.")
-    columns = st.columns(4)
-    steps = [
-        ("1. A score and its drivers", "Health scores", "See the sub-scores add up."),
-        ("2. Parent, child, contact", "Hierarchy and people", "The tree is the navigation."),
-        ("3. Across the migration", "Journey and migration", "Legacy, bridge, then Salesforce."),
-        ("4. The work queue", "Home", "Switch to Process executor for the steps."),
-    ]
-    for column, (title, page, body) in zip(columns, steps):
-        with column:
-            st.markdown(f"**{title}**")
-            st.caption(body)
-            if page == "Home":
-                st.button("Open the queue", on_click=request_viewer, args=("Process executor",), key="start-queue", width="stretch")
-            else:
-                st.button(page, on_click=request_page, args=(page,), key=f"start-{page}", width="stretch")
+    st.markdown("### Where to go next")
+    st.markdown(
+        "Use **Go to** in the sidebar. **Health scores** opens one account and the drivers. "
+        "**Hierarchy and people** is the parent, child, and contact tree. "
+        "**Journey and migration** is the timeline across cutover."
+    )
 
 
 def file_map(portfolio: hm.Portfolio) -> None:
@@ -498,27 +432,21 @@ def file_map(portfolio: hm.Portfolio) -> None:
     st.caption(f"Folder: {portfolio.folder}")
 
 
-def health_page(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> None:
+def health_page(portfolio: hm.Portfolio, scoped: pd.DataFrame) -> None:
     st.markdown(
-        f"<div class='hero'><div class='eyebrow'>{html.escape(viewer)} view</div><h1>Health scores</h1><p>Churn health and expansion potential, the sub-scores that add up to them, and the drivers under each sub-score.</p></div>",
+        "<div class='hero'><div class='eyebrow'>One account</div><h1>Health scores</h1><p>Leadership checks whether the rollup is complete. Process executors read the drivers behind a step. The account opens under this note.</p></div>",
         unsafe_allow_html=True,
     )
-    if viewer == "Strategic":
-        st.caption("Use this page to see whether a portfolio number is built out of a full set of domains, or out of a gap.")
-    elif viewer == "Operational":
-        st.caption("Use this page on one account before a review. The band, the as-of date, and the confidence are part of the number.")
-    else:
-        st.caption("Use this page to see why a task is on your list. Act in Salesforce. Do not treat a small-sample role score as stable.")
+    st.caption("Leadership: a missing domain stays visible as a gap. Process executors: the steps sit with the account. A small-sample role score is not a stable number.")
     row = pick_account(scoped)
     if row is None:
         return
-    if viewer == "Process executor":
-        steps = action_frame(portfolio, scoped[scoped["account_id"].eq(row["account_id"])], "Process executor")
-        st.markdown("**Steps for this account**")
-        if steps.empty:
-            st.caption("No execution step is open on this account.")
-        else:
-            st.dataframe(steps, width="stretch", hide_index=True)
+    steps = action_frame(portfolio, scoped[scoped["account_id"].eq(row["account_id"])], "Process executor")
+    st.markdown("**Steps for this account**")
+    if steps.empty:
+        st.caption("No execution step is open on this account.")
+    else:
+        st.dataframe(steps, width="stretch", hide_index=True)
     columns = st.columns(4)
     columns[0].metric("Churn health", _one(row["churn_health"]), row["churn_band"])
     columns[1].metric("Churn risk", _one(row["churn_risk"]), "100 minus churn health")
@@ -549,18 +477,17 @@ def health_page(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> N
                 totals = drivers.groupby("Domain")["Impact"].sum()
                 st.caption("Impact by domain: " + ", ".join(f"{domain} {value:.0f}" for domain, value in totals.items()) + ".")
     people_block(portfolio, row, include_parent=True)
-    if viewer != "Process executor":
-        history = hm.account_history(portfolio, row["account_id"])
-        book = hm.portfolio_trend(portfolio, scoped["account_id"].tolist())
-        figure = account_trend_figure(history, book, portfolio.cutover, str(row["account_name"]))
-        if figure is not None:
-            st.plotly_chart(figure, width="stretch", theme="streamlit", config=CHART, key=f"acct-trend-{row['account_id']}")
-            st.caption("The account line is its own score. The book line is the ARR-weighted scope. Both use the reconciled go-forward number after cutover when the bridge says Salesforce.")
+    history = hm.account_history(portfolio, row["account_id"])
+    book = hm.portfolio_trend(portfolio, scoped["account_id"].tolist())
+    figure = account_trend_figure(history, book, portfolio.cutover, str(row["account_name"]))
+    if figure is not None:
+        st.plotly_chart(figure, width="stretch", theme="streamlit", config=CHART, key=f"acct-trend-{row['account_id']}")
+        st.caption("The account line is its own score. The book line is the ARR-weighted scope. Both use the reconciled go-forward number after cutover when the bridge says Salesforce.")
 
 
-def hierarchy_page(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> None:
+def hierarchy_page(portfolio: hm.Portfolio, scoped: pd.DataFrame) -> None:
     st.markdown(
-        f"<div class='hero'><div class='eyebrow'>{html.escape(viewer)} view</div><h1>Hierarchy and people</h1><p>Parents, child accounts, and the contacts on them. Family health is a rollup. It does not replace the account score.</p></div>",
+        "<div class='hero'><div class='eyebrow'>Support and product</div><h1>Hierarchy and people</h1><p>Parents, child accounts, and the contacts on them. Family health is a rollup. It does not replace the account score. Compare the family number with the weakest child before treating the parent as healthy.</p></div>",
         unsafe_allow_html=True,
     )
     if scoped.empty:
@@ -585,10 +512,7 @@ def hierarchy_page(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -
         f"expansion **{_one(head['family_expansion'])}**, on **{hm.money(head['family_arr'])}** ARR across {int(head['family_accounts'])} accounts."
     )
     st.caption("The family number is the ARR-weighted mean of every account in the family, including the parent. Each account below keeps its own score.")
-    if viewer == "Strategic":
-        st.caption("Strategic read: compare the family number with the weakest child before you treat the parent as healthy.")
-    elif viewer == "Process executor":
-        st.caption("Executor read: call the person on the account the task names. Sponsors often sit on the parent, not the child site.")
+    st.caption("Process executors: the person named on a task may sit on the parent, not the child site.")
     for _, account in family.iterrows():
         child = " child" if account["hierarchy_level"] == "Child" else ""
         share = ""
@@ -630,17 +554,11 @@ def hierarchy_page(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -
         )
 
 
-def journey_page(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> None:
+def journey_page(portfolio: hm.Portfolio, scoped: pd.DataFrame) -> None:
     st.markdown(
-        f"<div class='hero'><div class='eyebrow'>{html.escape(viewer)} view</div><h1>Journey and migration</h1><p>Touchpoints from the legacy CRM through cutover and onto Salesforce, plus the reconciled health series.</p></div>",
+        "<div class='hero'><div class='eyebrow'>Support</div><h1>Journey and migration</h1><p>Touchpoints from the legacy CRM through cutover and onto Salesforce, plus the reconciled health series. Leadership looks for a break at cutover. A legacy-only row has no home on the new instance.</p></div>",
         unsafe_allow_html=True,
     )
-    if viewer == "Strategic":
-        st.caption("Look for a break at cutover, then for accounts whose reconciled source is still the legacy CRM.")
-    elif viewer == "Operational":
-        st.caption("Read the journey before a QBR. A score that jumps at cutover needs the bridge note, not a new story about the customer.")
-    else:
-        st.caption("Log the next touch in Salesforce. A row badged legacy-only has no home on the new instance.")
     row = pick_account(scoped)
     if row is None:
         return
@@ -693,6 +611,30 @@ def journey_page(portfolio: hm.Portfolio, scoped: pd.DataFrame, viewer: str) -> 
         show["Month"] = show["Month"].map(hm.pretty_date)
         st.markdown("**Reconciled series**")
         st.dataframe(show, width="stretch", hide_index=True, height=320)
+
+
+def source_page(portfolio: hm.Portfolio) -> None:
+    st.markdown(
+        "<div class='hero'><div class='eyebrow'>Every file in the folder</div><h1>Source tables</h1><p>This is the raw extract. Mapped files feed the health pages. Unmapped files stay here so nothing in the folder is hidden.</p></div>",
+        unsafe_allow_html=True,
+    )
+    if not portfolio.files:
+        st.info("No CSV, Excel, JSON, or Parquet files were found in the folder.")
+        return
+    labels = [item.label for item in portfolio.files]
+    choice = st.selectbox("File", labels, key="source_file")
+    meta = next(item for item in portfolio.files if item.label == choice)
+    st.caption("Used for: " + ", ".join(meta.roles) + ("" if meta.notes else "") )
+    for note in meta.notes:
+        st.caption(note)
+    frame = portfolio.tables.get(choice)
+    if frame is None or frame.empty:
+        st.info("This file has no rows.")
+        return
+    missing = frame.isna().mean().sort_values(ascending=False)
+    missing = missing[missing.gt(0)]
+    st.caption(f"{len(frame):,} rows · {frame.shape[1]} columns" + ("" if missing.empty else f" · columns with gaps: {', '.join(missing.index.astype(str)[:8])}"))
+    st.dataframe(frame.head(200), width="stretch", hide_index=True, height=480)
 
 
 def pick_account(scoped: pd.DataFrame) -> pd.Series | None:

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-APP = Path(__file__).resolve().parent / "app.py"
+APP = Path(__file__).resolve().parents[1] / "app.py"
 ROOT = APP.parent
 
 
@@ -15,21 +15,15 @@ def visible(app: AppTest) -> str:
 
 
 def test_home_opens_on_the_health_handoff_and_the_three_viewers(monkeypatch):
-    health = ROOT / "data" / "health"
-    if not health.exists():
-        return
-    monkeypatch.setattr("dashboard_lib.default_folder", lambda: health)
+    monkeypatch.setenv("DASHBOARD_DATA_DIR", str(ROOT / "data" / "health"))
     app = AppTest.from_file(str(APP), default_timeout=120)
     app.run()
     assert not app.exception, app.exception
-    text = "\n".join(block.value for block in app.markdown)
+    text = visible(app)
     assert "Account health handoff" in text
-    assert "Strategic view" in text
+    assert "Who reads what" in text
     assert "Harbor Transit" in text
     assert "Salesforce" in text
-    app.radio(key="viewer").set_value("Process executor").run()
-    assert not app.exception, app.exception
-    text = "\n".join(block.value for block in app.markdown)
     assert "Do this in Salesforce" in text
     app.radio(key="page").set_value("Health scores").run()
     assert not app.exception, app.exception
@@ -44,39 +38,25 @@ def test_home_opens_on_the_health_handoff_and_the_three_viewers(monkeypatch):
     assert not app.exception, app.exception
     text = "\n".join(block.value for block in app.markdown)
     assert "Reconciled" in text or "Touchpoints" in text
-
-
-def _practicum_dir() -> Path | None:
-    bundled = ROOT / "data" / "practicum"
-    external = Path(r"c:\Users\pomos\OneDrive\Documents\Ga_Tech_Courses\Applied_Analytics_Practicum\Dashboard datasets")
-    for pack in (bundled, external):
-        if (pack / "product_health_score.csv").exists() and (pack / "score_context.csv").exists():
-            return pack
-    return None
+    app.radio(key="page").set_value("Source tables").run()
+    assert not app.exception, app.exception
 
 
 def test_practicum_pack_opens_on_the_historical_scores(monkeypatch):
-    pack = _practicum_dir()
-    if pack is None:
+    pack = ROOT / "data" / "practicum"
+    if not (pack / "product_health_score.csv").exists():
         return
-    monkeypatch.setattr("dashboard_lib.default_folder", lambda: pack)
+    monkeypatch.setenv("DASHBOARD_DATA_DIR", str(pack))
     app = AppTest.from_file(str(APP), default_timeout=180)
     app.run()
     assert not app.exception, app.exception
     text = visible(app)
-    assert "Executive Summary: At a Glance" in text
-    assert "Account health handoff · 1 of 5" not in text
-    assert "What Product reads in the book" not in text
+    assert "Account health handoff" in text
     assert "1 Jan 2025" in text
-    assert "300-day" in text
-    assert "91.6%" in text
-    assert "Product adoption" in text
-    assert "Customer Success" in text
+    assert "Calibration bands on the held-out test" in text
     assert "Read this before the numbers" not in text
-    app.radio(key="viewer").set_value("Process executor").run()
-    assert not app.exception, app.exception
-    text = visible(app)
-    assert "live lookup" in text.lower()
+    assert "Who reads what" in text
+    assert "Leadership" in text
     app.radio(key="page").set_value("Health scores").run()
     assert not app.exception, app.exception
     text = visible(app)
@@ -95,3 +75,5 @@ def test_practicum_pack_opens_on_the_historical_scores(monkeypatch):
     assert not app.exception, app.exception
     text = visible(app)
     assert "legacy-only" in text.lower()
+    app.radio(key="page").set_value("Source tables").run()
+    assert not app.exception, app.exception
